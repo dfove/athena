@@ -1,0 +1,215 @@
+/*
+ * Copyright (c) 2021 dfove.com Authors. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+EXEC SQL INCLUDE RDbProc.h;
+
+#include <RTime.hpp>
+
+using namespace athena;
+
+RDbProc::RDbProc(bool autoReconn /*= true*/)
+        :m_isConnected(false),
+         m_autoReConn(autoReconn),
+         m_sqlContext(0)
+{
+    memset(&sqlca, 0, sizeof(sqlca));
+}
+
+RDbProc::RDbProc(const RString& strDbConn, bool autoReconn /*= true*/)
+        :m_isConnected(false),
+         m_autoReConn(autoReconn),
+         m_sqlContext(0)
+{
+    size_t nPos1 = strDbConn.find_first_of("/");
+    m_userName = strDbConn.substr(0,nPos1);
+    size_t nPos2 = strDbConn.find_first_of("@");
+    m_password = strDbConn.substr(nPos1+1, nPos2 - nPos1 - 1);
+    m_dbName = strDbConn.substr(nPos2+1);
+}
+
+RDbProc::RDbProc(const RString& username, 
+                 const RString& passwd, 
+                 const RString& dbName,
+                 bool autoReconn /*= true*/)
+        :m_userName(username),
+         m_password(passwd),
+         m_dbName(dbName),
+         m_isConnected(false),
+         m_autoReConn(autoReconn),
+         m_sqlContext(0)
+{
+    memset(&sqlca, 0, sizeof(sqlca));
+}
+
+RDbProc::RDbProc(const RString& username, 
+                 const RString& passwd, 
+                 const RString& dbName, 
+                 const RString& dbLink,
+                 bool autoReconn /*= true*/)
+        :m_userName(username),
+         m_password(passwd),
+         m_dbName(dbName),
+         m_dbLinkName(dbLink),
+         m_isConnected(false),
+         m_autoReConn(autoReconn),
+         m_sqlContext(0)
+{
+    memset(&sqlca, 0, sizeof(sqlca));
+}
+
+RDbProc::~RDbProc()
+{
+}
+
+bool 
+RDbProc::Connect()
+{
+    if ( m_isConnected )
+        return true;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char username[128];
+    char password[128];
+    char oraclename[128];
+    char dbLinkName[128];
+    EXEC SQL END DECLARE SECTION;
+
+    strcpy(username, m_userName.c_str());
+    strcpy(password, m_password.c_str());
+    strcpy(oraclename, m_dbName.c_str());
+    if ( m_dbLinkName.size() != 0 )
+        strcpy(dbLinkName, m_dbLinkName.c_str());
+
+    EXEC SQL ENABLE THREADS;
+    EXEC SQL CONTEXT ALLOCATE :m_sqlContext;
+    EXEC SQL CONTEXT USE :m_sqlContext;
+
+    if ( m_dbLinkName.size() != 0 )
+        EXEC SQL CONNECT :username IDENTIFIED BY:password AT :dbLinkName using :oraclename;
+    else
+        EXEC SQL CONNECT :username IDENTIFIED BY:password using :oraclename;
+
+    bool bRet = ( sqlca.sqlcode == 0 );
+    if ( bRet == 0 )
+        m_isConnected = true;
+
+    return bRet;
+}
+
+bool 
+RDbProc::Connect(const RString& strDbConn, bool is)
+{
+    size_t nPos1 = strDbConn.find_first_of("/");
+    if ( nPos1 == RString::npos )
+        return false;
+    m_userName = strDbConn.substr(0,nPos1);
+    size_t nPos2 = strDbConn.find_first_of("@");
+    if ( nPos2 == RString::npos )
+        return false;
+    m_password = strDbConn.substr(nPos1+1, nPos2 - nPos1 - 1);
+    m_dbName = strDbConn.substr(nPos2+1);
+    m_dbLinkName = m_dbName;
+    return Connect();
+}
+
+bool 
+RDbProc::Connect(const RString& username,
+                 const RString& passwd,
+                 const RString& dbName)
+{
+    m_userName = username;
+    m_password = passwd;
+    m_dbName = dbName;
+    return Connect();
+}
+
+bool 
+RDbProc::Connect(const RString& username,
+                 const RString& passwd,
+                 const RString& dbName,
+                 const RString& dbLink)
+{
+    m_userName = username;
+    m_password = passwd;
+    m_dbName = dbName;
+    m_dbLinkName = dbLink;
+    return Connect();
+}
+
+void 
+RDbProc::DisconDb()
+{
+    EXEC SQL CONTEXT USE :m_sqlContext;
+    EXEC SQL ROLLBACK WORK RELEASE ;
+    EXEC SQL CONTEXT FREE :m_sqlContext;
+    m_isConnected = false;
+}
+
+bool 
+RDbProc::Commit()
+{
+    EXEC SQL CONTEXT USE :m_sqlContext;
+    EXEC SQL COMMIT;
+    return sqlca.sqlcode == 0;
+}
+
+bool 
+RDbProc::Rollback()
+{
+    EXEC SQL CONTEXT USE :m_sqlContext;
+    EXEC SQL ROLLBACK;
+    return sqlca.sqlcode == 0;
+}
+
+
+RString  
+RDbProc::ReportErr(void)
+{
+    sqlca.sqlerrm.sqlerrmc[sqlca.sqlerrm.sqlerrml] = 0;
+    RString sErr(sqlca.sqlerrm.sqlerrmc);
+    sErr.TrimRightLWS();
+    return sErr;
+}
+
+bool 
+RDbProc::ReConnect(int retryTimes /*= 6*/, int retryInterval /*= 10*/)
+{
+    int i = 0;
+    while( i++ < retryTimes )
+    {
+        if(Connect() != 0)
+            RTime::Sleep_s(retryInterval);
+        else
+            return true;
+    }
+    return false;
+}
+
+void 
+RDbProc::Sqlerror()
+{
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    if(CONNECTION_IS_BROKEN(sqlca))
+    {
+        m_isConnected = false;
+        if ( m_autoReConn )
+        {
+            if ( ReConnect() == true )
+            {
+                m_isConnected = true;
+            }
+        }
+    }
+}
